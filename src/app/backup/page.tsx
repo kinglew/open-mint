@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { exportSnapshot, getMeta, importSnapshot, setMeta, storageInfo } from "@/lib/db";
+import { exportSnapshot, getMeta, importSnapshot, liveCounts, setMeta, storageInfo } from "@/lib/db";
 import { decryptBackup, encryptSnapshot, type BackupFile } from "@/lib/backup";
 
 export default function BackupPage() {
@@ -58,7 +58,8 @@ export default function BackupPage() {
       const snap = await decryptBackup(JSON.parse(await f.text()) as BackupFile, importPass);
       await importSnapshot(snap, mode);
       setImportPass("");
-      setMsg(`Restored ${snap.transactions.length} expenses, ${snap.budgets.length} budgets, ${snap.categories.length} categories (${mode}).`);
+      const c = liveCounts(snap);
+      setMsg(`Restored ${c.txns} expenses, ${c.budgets} budgets, ${c.categories} categories (${mode}).`);
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : "Import failed");
     } finally {

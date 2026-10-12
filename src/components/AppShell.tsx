@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getMeta, query } from "@/lib/db";
+import { SyncAgent } from "./SyncAgent";
 
 const REMIND_DAYS = 14;
 
@@ -30,7 +31,7 @@ export function AppShell() {
 
   useEffect(() => {
     (async () => {
-      const [{ n }] = await query<{ n: number }>("SELECT COUNT(*) AS n FROM txn");
+      const [{ n }] = await query<{ n: number }>("SELECT COUNT(*) AS n FROM txn WHERE deleted=0");
       if (!n) return setRemind(false);
       const last = await getMeta("lastBackup");
       setRemind(!last || Date.now() - Date.parse(last) > REMIND_DAYS * 864e5);
@@ -39,6 +40,7 @@ export function AppShell() {
 
   return (
     <>
+      <SyncAgent />
       {offline && <p className="bg-slate-800 px-4 py-1 text-center text-xs text-white">Offline — everything still works; data is on this device.</p>}
       {remind && pathname !== "/backup/" && pathname !== "/backup" && (
         <Link href="/backup/" className="block bg-amber-100 px-4 py-2 text-center text-xs text-amber-900" data-testid="backup-reminder">

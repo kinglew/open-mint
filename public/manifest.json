@@ -1,6 +1,6 @@
 {
-  "name": "Mint Rebuild",
-  "short_name": "Mint",
+  "name": "Open Mint",
+  "short_name": "Open Mint",
   "description": "Free Mint-like budgets, expenses, and on-device receipt OCR. No ads.",
   "start_url": "/",
   "display": "standalone",

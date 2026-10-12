@@ -5,14 +5,14 @@ import { Nav } from "@/components/Nav";
 import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "Mint Rebuild — Free Budgets",
+  title: "Open Mint — Free Budgets",
   description:
-    "Free, local-first Mint-like PWA: your data stays on your device. Manual expenses, budgets, on-device receipt OCR.",
-  applicationName: "Mint Rebuild",
+    "Open Mint: free, local-first Mint-like PWA: your data stays on your device. Manual expenses, budgets, on-device receipt OCR.",
+  applicationName: "Open Mint",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Mint Rebuild",
+    title: "Open Mint",
   },
   formatDetection: { telephone: false },
   manifest: "/manifest.json",
@@ -44,7 +44,7 @@ export default function RootLayout({
                 <p className="text-xs font-medium uppercase tracking-wide text-emerald-100">
                   Free · No ads
                 </p>
-                <h1 className="text-lg font-bold leading-tight">Mint Rebuild</h1>
+                <h1 className="text-lg font-bold leading-tight">Open Mint</h1>
               </div>
               <div className="flex gap-2">
                 <Link href="/categories/" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-medium backdrop-blur hover:bg-white/25">
@@ -52,6 +52,9 @@ export default function RootLayout({
                 </Link>
                 <Link href="/backup/" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-medium backdrop-blur hover:bg-white/25">
                   Backup
+                </Link>
+                <Link href="/sync/" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-medium backdrop-blur hover:bg-white/25">
+                  Sync
                 </Link>
               </div>
             </div>

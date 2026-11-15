@@ -2,14 +2,16 @@
 // Client-only data layer. All reads/writes go to SQLite WASM in a Web Worker,
 // persisted in the browser's Origin Private File System. No network calls.
 import { currentMonth } from "./format";
+import { openSecret, sealSecret } from "./devicekey";
 
 export type Category = { id: string; name: string; icon: string | null; color: string | null; isDefault: boolean; createdAt: string };
 export type Budget = { id: string; categoryId: string; month: string; amountCents: number; category: Category };
 export type Txn = {
   id: string; amountCents: number; date: string; merchant: string; categoryId: string;
-  notes: string | null; source: "manual" | "ocr"; createdAt: string; updatedAt: string | null; category: Category;
+  notes: string | null; source: "manual" | "ocr" | "bank"; createdAt: string; updatedAt: string | null; category: Category;
+  externalId: string | null; pending: boolean; accountId: string | null; userEdited: boolean;
 };
-export type TxnInput = { amountCents: number; date: string; merchant: string; categoryId: string; notes: string | null; source: "manual" | "ocr" };
+export type TxnInput = { amountCents: number; date: string; merchant: string; categoryId: string; notes: string | null; source: "manual" | "ocr" | "bank" };
 
 type Row = Record<string, unknown>;
 let worker: Worker | null = null;
@@ -62,7 +64,8 @@ function catFromJoined(r: Row): Category {
   return toCategory({ id: r.c_id, name: r.c_name, icon: r.c_icon, color: r.c_color, isDefault: r.c_isDefault, createdAt: r.c_createdAt });
 }
 function toTxn(r: Row): Txn {
-  return { id: r.id as string, amountCents: r.amountCents as number, date: r.date as string, merchant: r.merchant as string, categoryId: r.categoryId as string, notes: (r.notes as string) ?? null, source: r.source as "manual" | "ocr", createdAt: r.createdAt as string, updatedAt: (r.updatedAt as string) ?? null, category: catFromJoined(r) };
+  return { id: r.id as string, amountCents: r.amountCents as number, date: r.date as string, merchant: r.merchant as string, categoryId: r.categoryId as string, notes: (r.notes as string) ?? null, source: r.source as Txn["source"], createdAt: r.createdAt as string, updatedAt: (r.updatedAt as string) ?? null, category: catFromJoined(r),
+    externalId: (r.externalId as string) ?? null, pending: !!r.pending, accountId: (r.accountId as string) ?? null, userEdited: !!r.userEdited };
 }
 
 // ---- Categories
@@ -109,7 +112,8 @@ export async function addTxn(t: TxnInput) {
 }
 export async function updateTxn(id: string, t: TxnInput) {
   validate(t);
-  await write(query("UPDATE txn SET amountCents=?, date=?, merchant=?, categoryId=?, notes=?, updatedAt=? WHERE id=?",
+  // userEdited=1 protects a bank-imported row's merchant/category from being overwritten by later bank syncs.
+  await write(query("UPDATE txn SET amountCents=?, date=?, merchant=?, categoryId=?, notes=?, userEdited=1, updatedAt=? WHERE id=?",
     [Math.round(t.amountCents), t.date, t.merchant.trim(), t.categoryId, t.notes, now(), id]));
 }
 export async function deleteTxn(id: string) {
@@ -128,18 +132,36 @@ export async function setBudget(categoryId: string, month: string, amountCents: 
 }
 
 export function isIncome(t: Txn) {
-  return t.category.name.toLowerCase() === "income" || t.amountCents < 0;
+  return !isTransfer(t) && (t.category.name.toLowerCase() === "income" || t.amountCents < 0);
+}
+/** Money moved between your own accounts (e.g. credit-card payments): neither spending nor income. */
+export function isTransfer(t: Txn) {
+  return t.category.name.toLowerCase() === "transfers";
+}
+export function countsAsSpend(t: Txn) {
+  return !isTransfer(t) && !isIncome(t);
 }
 
 // ---- Snapshot (for backup + sync). Includes tombstones (deleted=1) so deletes propagate.
-export type Snapshot = { version: 1; exportedAt: string; categories: Row[]; budgets: Row[]; transactions: Row[] };
+// Bank tables are optional so older snapshots/backups still load. Link items carry the Plaid access token in
+// *plaintext inside the snapshot* — snapshots only ever leave the device inside a passphrase-encrypted container
+// (backup file or E2E-encrypted Drive sync); on import the token is re-sealed with this device's key.
+export type Snapshot = {
+  version: 1; exportedAt: string; categories: Row[]; budgets: Row[]; transactions: Row[];
+  accounts?: Row[]; linkItems?: Row[]; rules?: Row[];
+};
 export async function exportSnapshot(): Promise<Snapshot> {
-  const [categories, budgets, transactions] = await batch([
+  const [categories, budgets, transactions, accounts, items, rules] = await batch([
     { sql: "SELECT id,name,icon,color,isDefault,createdAt,updatedAt,deleted FROM category" },
     { sql: "SELECT id,categoryId,month,amountCents,updatedAt,deleted FROM budget" },
-    { sql: "SELECT id,amountCents,date,merchant,categoryId,notes,source,createdAt,updatedAt,deleted FROM txn" },
+    { sql: "SELECT id,amountCents,date,merchant,categoryId,notes,source,createdAt,updatedAt,deleted,externalId,pending,accountId,userEdited FROM txn" },
+    { sql: "SELECT id,itemId,institution,name,officialName,mask,type,subtype,currentCents,availableCents,currency,updatedAt,deleted FROM bank_account" },
+    { sql: "SELECT id,institutionId,institution,accessTokenEnc,cursor,status,lastError,lastSyncedAt,createdAt,updatedAt,deleted FROM link_item" },
+    { sql: "SELECT id,pattern,categoryId,createdAt,updatedAt,deleted FROM category_rule" },
   ]);
-  return { version: 1, exportedAt: now(), categories, budgets, transactions };
+  const linkItems: Row[] = [];
+  for (const { accessTokenEnc, ...it } of items) linkItems.push({ ...it, accessToken: it.deleted ? null : await openSecret(accessTokenEnc as string) });
+  return { version: 1, exportedAt: now(), categories, budgets, transactions, accounts, linkItems, rules };
 }
 const live = (r: Row) => !r.deleted;
 export function liveCounts(s: Snapshot) {
@@ -151,14 +173,26 @@ function upsertStmts(s: Snapshot, onlyIfNewer: boolean) {
   const stmts: { sql: string; params?: unknown[] }[] = [];
   for (const c of s.categories) stmts.push({ sql: `INSERT INTO category (id,name,icon,color,isDefault,createdAt,updatedAt,deleted) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, icon=excluded.icon, color=excluded.color, isDefault=excluded.isDefault, updatedAt=excluded.updatedAt, deleted=excluded.deleted${guard("category")}`, params: [c.id, c.name, c.icon, c.color, c.isDefault ? 1 : 0, c.createdAt, ts0(c, c.createdAt), c.deleted ? 1 : 0] });
   for (const b of s.budgets) stmts.push({ sql: `INSERT INTO budget (id,categoryId,month,amountCents,updatedAt,deleted) VALUES (?,?,?,?,?,?) ON CONFLICT DO UPDATE SET amountCents=excluded.amountCents, updatedAt=excluded.updatedAt, deleted=excluded.deleted${guard("budget")}`, params: [b.id, b.categoryId, b.month, b.amountCents, ts0(b, s.exportedAt), b.deleted ? 1 : 0] });
-  for (const t of s.transactions) stmts.push({ sql: `INSERT INTO txn (id,amountCents,date,merchant,categoryId,notes,source,createdAt,updatedAt,deleted) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET amountCents=excluded.amountCents, date=excluded.date, merchant=excluded.merchant, categoryId=excluded.categoryId, notes=excluded.notes, source=excluded.source, updatedAt=excluded.updatedAt, deleted=excluded.deleted${guard("txn")}`, params: [t.id, t.amountCents, t.date, t.merchant, t.categoryId, t.notes, t.source, t.createdAt, ts0(t, t.createdAt), t.deleted ? 1 : 0] });
+  // A live row claiming a bank externalId evicts any other local row holding it (cross-device duplicate).
+  for (const t of s.transactions) if (t.externalId && !t.deleted) stmts.push({ sql: "UPDATE txn SET externalId=NULL, deleted=1 WHERE externalId=? AND id<>?", params: [t.externalId, t.id] });
+  for (const t of s.transactions) stmts.push({ sql: `INSERT INTO txn (id,amountCents,date,merchant,categoryId,notes,source,createdAt,updatedAt,deleted,externalId,pending,accountId,userEdited) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET amountCents=excluded.amountCents, date=excluded.date, merchant=excluded.merchant, categoryId=excluded.categoryId, notes=excluded.notes, source=excluded.source, updatedAt=excluded.updatedAt, deleted=excluded.deleted, externalId=excluded.externalId, pending=excluded.pending, accountId=excluded.accountId, userEdited=excluded.userEdited${guard("txn")}`, params: [t.id, t.amountCents, t.date, t.merchant, t.categoryId, t.notes, t.source, t.createdAt, ts0(t, t.createdAt), t.deleted ? 1 : 0, t.externalId ?? null, t.pending ? 1 : 0, t.accountId ?? null, t.userEdited ? 1 : 0] });
+  for (const a of s.accounts || []) stmts.push({ sql: `INSERT INTO bank_account (id,itemId,institution,name,officialName,mask,type,subtype,currentCents,availableCents,currency,updatedAt,deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET itemId=excluded.itemId, institution=excluded.institution, name=excluded.name, officialName=excluded.officialName, mask=excluded.mask, type=excluded.type, subtype=excluded.subtype, currentCents=excluded.currentCents, availableCents=excluded.availableCents, currency=excluded.currency, updatedAt=excluded.updatedAt, deleted=excluded.deleted${guard("bank_account")}`, params: [a.id, a.itemId, a.institution ?? null, a.name, a.officialName ?? null, a.mask ?? null, a.type ?? null, a.subtype ?? null, a.currentCents ?? null, a.availableCents ?? null, a.currency ?? null, ts0(a, s.exportedAt), a.deleted ? 1 : 0] });
+  for (const i of s.linkItems || []) stmts.push({ sql: `INSERT INTO link_item (id,institutionId,institution,accessTokenEnc,cursor,status,lastError,lastSyncedAt,createdAt,updatedAt,deleted) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET institutionId=excluded.institutionId, institution=excluded.institution, accessTokenEnc=excluded.accessTokenEnc, cursor=excluded.cursor, status=excluded.status, lastError=excluded.lastError, lastSyncedAt=excluded.lastSyncedAt, updatedAt=excluded.updatedAt, deleted=excluded.deleted${guard("link_item")}`, params: [i.id, i.institutionId ?? null, i.institution ?? null, i.accessTokenEnc ?? null, i.cursor ?? null, i.status || "ok", i.lastError ?? null, i.lastSyncedAt ?? null, i.createdAt || s.exportedAt, ts0(i, i.createdAt), i.deleted ? 1 : 0] });
+  for (const r of s.rules || []) stmts.push({ sql: `INSERT INTO category_rule (id,pattern,categoryId,createdAt,updatedAt,deleted) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET pattern=excluded.pattern, categoryId=excluded.categoryId, updatedAt=excluded.updatedAt, deleted=excluded.deleted${guard("category_rule")}`, params: [r.id, r.pattern, r.categoryId, r.createdAt || s.exportedAt, ts0(r, r.createdAt), r.deleted ? 1 : 0] });
   return stmts;
+}
+/** Re-seal plaintext access tokens from a snapshot with this device's key before writing. */
+async function sealItems(s: Snapshot): Promise<Snapshot> {
+  if (!s.linkItems?.length) return s;
+  const linkItems: Row[] = [];
+  for (const { accessToken, ...it } of s.linkItems) linkItems.push({ ...it, accessTokenEnc: accessToken && !it.deleted ? await sealSecret(accessToken as string) : null });
+  return { ...s, linkItems };
 }
 export async function importSnapshot(s: Snapshot, mode: "replace" | "merge") {
   if (s.version !== 1) throw new Error("Unsupported backup version");
   const stmts: { sql: string; params?: unknown[] }[] = [];
-  if (mode === "replace") stmts.push({ sql: "DELETE FROM txn" }, { sql: "DELETE FROM budget" }, { sql: "DELETE FROM category" });
-  stmts.push(...upsertStmts(s, false));
+  if (mode === "replace") stmts.push({ sql: "DELETE FROM txn" }, { sql: "DELETE FROM budget" }, { sql: "DELETE FROM category_rule" }, { sql: "DELETE FROM bank_account" }, { sql: "DELETE FROM link_item" }, { sql: "DELETE FROM category" });
+  stmts.push(...upsertStmts(await sealItems(s), false));
   stmts.push({ sql: "INSERT OR REPLACE INTO meta (key,value) VALUES ('lastImport',?)", params: [now()] });
   await write(batch(stmts));
 }
@@ -168,7 +202,7 @@ export async function importSnapshot(s: Snapshot, mode: "replace" | "merge") {
 export async function applySyncedSnapshot(merged: Snapshot) {
   const stmts: { sql: string; params?: unknown[] }[] = [];
   for (const b of merged.budgets) stmts.push({ sql: "DELETE FROM budget WHERE categoryId=? AND month=? AND id<>?", params: [b.categoryId, b.month, b.id] });
-  stmts.push(...upsertStmts(merged, true));
+  stmts.push(...upsertStmts(await sealItems(merged), true));
   await batch(stmts);
   if (typeof window !== "undefined") window.dispatchEvent(new Event(DATA_SYNCED_EVENT));
 }

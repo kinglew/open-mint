@@ -47,7 +47,8 @@ export default function ExpensesPage() {
                 <p className="truncate font-medium text-slate-800">{tx.merchant}</p>
                 <p className="text-xs text-slate-500">
                   {tx.category.icon} {tx.category.name} · {tx.date}
-                  {tx.source === "ocr" ? " · OCR" : " · manual"}
+                  {tx.source === "ocr" ? " · OCR" : tx.source === "bank" ? " · Bank" : " · manual"}
+                  {tx.pending && <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">pending</span>}
                 </p>
                 {tx.notes && <p className="truncate text-xs text-slate-400">{tx.notes}</p>}
               </Link>

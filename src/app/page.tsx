@@ -4,15 +4,17 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { currentMonth, formatCents, formatMonthLabel } from "@/lib/format";
 import { BudgetBar } from "@/components/BudgetBar";
-import { isIncome, listBudgets, listTxns } from "@/lib/db";
+import { isIncome, isTransfer, listBudgets, listTxns } from "@/lib/db";
+import { listAccounts, netWorth } from "@/lib/bank";
 
 async function getDashboard() {
   const month = currentMonth();
-  const [budgets, transactions] = await Promise.all([listBudgets(month), listTxns(month)]);
+  const [budgets, transactions, accounts] = await Promise.all([listBudgets(month), listTxns(month), listAccounts()]);
   const spendByCategory: Record<string, number> = {};
   let totalSpend = 0;
   let totalIncome = 0;
   for (const tx of transactions) {
+    if (isTransfer(tx)) continue;
     if (isIncome(tx)) totalIncome += Math.abs(tx.amountCents);
     else {
       totalSpend += tx.amountCents;
@@ -21,7 +23,7 @@ async function getDashboard() {
   }
   const totalBudget = budgets.reduce((s, b) => s + b.amountCents, 0);
   const budgetProgress = budgets.map((b) => ({ ...b, spentCents: spendByCategory[b.categoryId] || 0 }));
-  return { month, totalSpend, totalIncome, totalBudget, budgetProgress, recent: transactions.slice(0, 8) };
+  return { month, totalSpend, totalIncome, totalBudget, budgetProgress, recent: transactions.slice(0, 8), accounts, worth: netWorth(accounts) };
 }
 type Dashboard = Awaited<ReturnType<typeof getDashboard>>;
 
@@ -97,6 +99,27 @@ export default function DashboardPage() {
         </Link>
       </section>
 
+      {data.accounts.length > 0 && (
+        <section className="space-y-2 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm" data-testid="dash-accounts">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-semibold text-slate-800">Accounts</h2>
+            <Link href="/bank/" className="text-sm font-medium text-emerald-700">Manage</Link>
+          </div>
+          <p className="text-sm text-slate-600">
+            Net worth <span className="font-bold text-slate-900" data-testid="dash-networth">{formatCents(data.worth.net)}</span>
+            <span className="ml-1 text-xs text-slate-400">(assets {formatCents(data.worth.assets)} − liabilities {formatCents(data.worth.liabilities)})</span>
+          </p>
+          <ul className="divide-y divide-slate-100 text-sm">
+            {data.accounts.map((a) => (
+              <li key={a.id} className="flex justify-between py-1.5">
+                <span className="truncate text-slate-700">{a.name}{a.mask ? ` ••${a.mask}` : ""}</span>
+                <span className="font-semibold text-slate-800">{a.currentCents == null ? "—" : formatCents(a.currentCents)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {data.budgetProgress.length > 0 && (
         <section className="space-y-3">
           <div className="flex items-center justify-between">
@@ -150,7 +173,8 @@ export default function DashboardPage() {
                   </p>
                   <p className="text-xs text-slate-500">
                     {tx.category.icon} {tx.category.name} · {tx.date}
-                    {tx.source === "ocr" ? " · OCR" : ""}
+                    {tx.source === "ocr" ? " · OCR" : tx.source === "bank" ? " · Bank" : ""}
+                    {tx.pending ? " · pending" : ""}
                   </p>
                 </div>
                 <span className="shrink-0 font-semibold text-slate-800">

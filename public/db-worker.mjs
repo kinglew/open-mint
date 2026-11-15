@@ -44,6 +44,30 @@ const MIGRATIONS = [
     db.exec({ sql: "UPDATE budget SET updatedAt = ? WHERE updatedAt IS NULL", bind: [ts] });
     db.exec({ sql: "UPDATE txn SET updatedAt = createdAt WHERE updatedAt IS NULL" });
   },
+  // v2: read-only bank linking (Plaid). Bank transactions live in txn (source='bank') keyed by externalId.
+  (db) => {
+    db.exec(`
+      ALTER TABLE txn ADD COLUMN externalId TEXT;
+      ALTER TABLE txn ADD COLUMN pending INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE txn ADD COLUMN accountId TEXT;
+      ALTER TABLE txn ADD COLUMN userEdited INTEGER NOT NULL DEFAULT 0;
+      CREATE UNIQUE INDEX IF NOT EXISTS txn_external ON txn(externalId) WHERE externalId IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS link_item (
+        id TEXT PRIMARY KEY, institutionId TEXT, institution TEXT,
+        accessTokenEnc TEXT, cursor TEXT, status TEXT NOT NULL DEFAULT 'ok', lastError TEXT,
+        lastSyncedAt TEXT, createdAt TEXT NOT NULL, updatedAt TEXT, deleted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS bank_account (
+        id TEXT PRIMARY KEY, itemId TEXT NOT NULL, institution TEXT, name TEXT NOT NULL, officialName TEXT,
+        mask TEXT, type TEXT, subtype TEXT, currentCents INTEGER, availableCents INTEGER, currency TEXT,
+        updatedAt TEXT, deleted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS category_rule (
+        id TEXT PRIMARY KEY, pattern TEXT NOT NULL, categoryId TEXT NOT NULL,
+        createdAt TEXT NOT NULL, updatedAt TEXT, deleted INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
 ];
 
 function migrate() {

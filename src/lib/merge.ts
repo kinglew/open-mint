@@ -5,6 +5,10 @@
 //  * Default categories created independently on two devices (same name, different ids) are
 //    collapsed onto one canonical id (smallest id), and references are rewritten.
 //  * Budgets are unique per (category, month): newest wins, others are dropped.
+//  * Bank transactions are unique per externalId (Plaid transaction_id): if two devices imported the same
+//    bank transaction under different local ids, one canonical row is kept (live > user-edited > newest >
+//    smallest id) and the duplicate becomes a tombstone with externalId cleared.
+//  * Bank accounts, link items and category rules merge by id (LWW + tombstones).
 import type { Snapshot } from "./db";
 
 type Row = Record<string, unknown>;
@@ -52,7 +56,7 @@ export function mergeSnapshots(local: Snapshot, remote: Snapshot | null, now = n
   }
   const fix = (r: Row) => (remap.has(r.categoryId as string) ? { ...r, categoryId: remap.get(r.categoryId as string) } : r);
 
-  const txns = [...lww(local.transactions, remote.transactions).values()].map(fix);
+  const txns = dedupeExternal([...lww(local.transactions, remote.transactions).values()].map(fix));
 
   const budgetsById = [...lww(local.budgets, remote.budgets).values()].map(fix);
   const byKey = new Map<string, Row>();
@@ -75,5 +79,31 @@ export function mergeSnapshots(local: Snapshot, remote: Snapshot | null, now = n
     categories: [...cats.values()].sort(sortId),
     budgets: [...byKey.values()].sort(sortId),
     transactions: txns.sort(sortId),
+    accounts: [...lww(local.accounts || [], remote.accounts || []).values()].sort(sortId),
+    linkItems: mergeItems(local.linkItems || [], remote.linkItems || []).sort(sortId),
+    rules: [...lww(local.rules || [], remote.rules || []).values()].map(fix).sort(sortId),
   };
+}
+
+function dedupeExternal(txns: Row[]): Row[] {
+  const byExt = new Map<string, Row[]>();
+  for (const t of txns) if (t.externalId) byExt.set(t.externalId as string, [...(byExt.get(t.externalId as string) || []), t]);
+  const losers = new Map<string, Row>();
+  for (const group of byExt.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) =>
+      (Number(!!a.deleted) - Number(!!b.deleted)) ||
+      (Number(!!b.userEdited) - Number(!!a.userEdited)) ||
+      (ts(a) !== ts(b) ? (ts(a) > ts(b) ? -1 : 1) : 0) ||
+      String(a.id).localeCompare(String(b.id)));
+    for (const l of group.slice(1)) losers.set(l.id as string, { ...l, deleted: 1, externalId: null });
+  }
+  return txns.map((t) => losers.get(t.id as string) || t);
+}
+
+// Link items: LWW, but never let a copy that couldn't decrypt its token (null) erase a live token.
+function mergeItems(a: Row[], b: Row[]): Row[] {
+  const tokens = new Map<string, unknown>();
+  for (const r of [...a, ...b]) if (r.accessToken) tokens.set(r.id as string, r.accessToken);
+  return [...lww(a, b).values()].map((r) => (!r.deleted && !r.accessToken && tokens.has(r.id as string) ? { ...r, accessToken: tokens.get(r.id as string) } : r));
 }

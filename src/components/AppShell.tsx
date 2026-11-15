@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getMeta, query } from "@/lib/db";
 import { SyncAgent } from "./SyncAgent";
+import { autoSyncIfDue, installDebugHook } from "@/lib/bank";
 
 const REMIND_DAYS = 14;
 
@@ -19,6 +20,9 @@ export function AppShell() {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
     if (navigator.storage?.persist) void navigator.storage.persist();
+    installDebugHook();
+    // Bank auto-sync on app open (throttled; no-op unless configured, keyed and linked).
+    autoSyncIfDue().catch(() => {});
     const upd = () => setOffline(!navigator.onLine);
     upd();
     window.addEventListener("online", upd);

@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test:e2e": "node scripts/e2e.mjs",
     "test:unit": "node --test scripts/test-merge.mjs",
-    "test:sync": "node scripts/e2e-sync.mjs"
+    "test:sync": "node scripts/e2e-sync.mjs",
+    "test:bank": "node scripts/e2e-bank.mjs",
+    "start:api": "node scripts/local-server.mjs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.4-build2",

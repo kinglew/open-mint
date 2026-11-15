@@ -19,7 +19,7 @@ type Props = {
     merchant?: string;
     categoryId?: string;
     notes?: string;
-    source?: "manual" | "ocr";
+    source?: "manual" | "ocr" | "bank";
   };
   submitLabel?: string;
   editId?: string;
@@ -46,6 +46,8 @@ export function ExpenseForm({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const source = initial?.source || "manual";
+  // Keep the sign of an existing negative amount (income/refund, e.g. from a bank import) when editing.
+  const sign = initial?.amountCents != null && initial.amountCents < 0 ? -1 : 1;
 
   useEffect(() => {
     listCategories()
@@ -80,7 +82,7 @@ export function ExpenseForm({
     setSaving(true);
     try {
       const input = {
-        amountCents: cents,
+        amountCents: cents > 0 ? cents * sign : cents,
         date,
         merchant: merchant.trim(),
         categoryId,

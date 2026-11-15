@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { BudgetBar } from "@/components/BudgetBar";
 import { currentMonth, formatMonthLabel, parseAmountToCents } from "@/lib/format";
-import { listBudgets, listCategories, listTxns, setBudget, isIncome } from "@/lib/db";
+import { listBudgets, listCategories, listTxns, setBudget, countsAsSpend } from "@/lib/db";
 
 type Category = {
   id: string;
@@ -46,7 +46,7 @@ export default function BudgetsPage() {
       setBudgets(buds as Budget[]);
       const map: Record<string, number> = {};
       for (const tx of txs) {
-        if (isIncome(tx)) continue;
+        if (!countsAsSpend(tx)) continue;
         map[tx.categoryId] = (map[tx.categoryId] || 0) + tx.amountCents;
       }
       setSpent(map);

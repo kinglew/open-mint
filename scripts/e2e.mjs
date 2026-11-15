@@ -89,6 +89,9 @@ await step("OCR receipt -> review -> save (source=ocr)", async () => {
   const date = await page.locator('input[type="date"]').inputValue();
   console.log("   OCR parsed:", { merchant, amount, date });
   expect(amount === "26.76", "amount parsed as " + amount);
+  expect(date === "2026-10-08", "date parsed as " + date);
+  // The Expenses list shows the current month only; move the receipt into it so the list check is date-independent.
+  const d = new Date(); await page.locator('input[type="date"]').fill(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
   await page.getByRole("button", { name: "Confirm & save expense" }).click();
   await page.waitForURL("**/expenses/");
   await page.getByText("OCR", { exact: false }).first().waitFor();

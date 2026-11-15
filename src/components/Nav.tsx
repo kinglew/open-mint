@@ -8,6 +8,7 @@ const links = [
   { href: "/expenses/", label: "Expenses", icon: "💳" },
   { href: "/budgets/", label: "Budgets", icon: "📈" },
   { href: "/receipts/new/", label: "Scan", icon: "📷" },
+  { href: "/bank/", label: "Bank", icon: "🏦" },
 ];
 
 export function Nav() {

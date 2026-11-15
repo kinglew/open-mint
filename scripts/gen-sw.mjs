@@ -36,9 +36,11 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
-  // Never intercept/caches Google sign-in or Drive API traffic (or any other origin).
-  if (/(^|\\.)(googleapis\\.com|google\\.com|gstatic\\.com)$/.test(url.hostname)) return;
+  // Never intercept/caches Google sign-in, Drive API or Plaid traffic (or any other origin).
+  if (/(^|\\.)(googleapis\\.com|google\\.com|gstatic\\.com|plaid\\.com)$/.test(url.hostname)) return;
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
+  // Never cache or intercept the bank relay (always live, never stored).
+  if (url.pathname.startsWith("/api/")) return;
   if (req.mode === "navigate") {
     // Network-first for pages so updates land, cached copy offline.
     let path = url.pathname;
